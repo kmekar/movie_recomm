@@ -1,0 +1,244 @@
+---
+title: "Movielens Project"
+author: "Kyle Karber"
+date: "April 17, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      fig.width = 6,
+                      fig.height = 4,
+                      fig.align = "center")
+```
+
+```{r preprocessing, include=FALSE}
+
+library(tidyverse)
+library(caret)
+library(lubridate)
+library(kableExtra)
+
+#### Import or Download Dataset ####
+if(file.exists("ml-10M100K/ratings.dat")){
+  # import movie ratings
+  ratings <- read.table(text = gsub("::", "\t", readLines("ml-10M100K/ratings.dat")),
+                        col.names = c("userId", "movieId", "rating", "timestamp"))
+  # import movie details
+  movies <- str_split_fixed(readLines("ml-10M100K/movies.dat"), "\\::", 3)
+  colnames(movies) <- c("movieId", "title", "genres")
+  movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                             title = as.character(title),
+                                             genres = as.character(genres))
+} else{
+  # download movie rating data
+  dl <- tempfile()
+  download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+  # unzip/import movie ratings
+  ratings <- read.table(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                        col.names = c("userId", "movieId", "rating", "timestamp"))
+  # unzip/import movie details
+  movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+  colnames(movies) <- c("movieId", "title", "genres")
+  movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                             title = as.character(title),
+                                             genres = as.character(genres))
+}
+
+#### Tidy Data ####
+# remove movie year from title and create column for movie year
+pattern <- "^(.*) \\(([0-9 \\-]*)\\)$"
+identical(length(str_detect(movies$title, pattern)), nrow(movies)) # check that pattern is detected for all movies
+movies <- movies %>%
+  mutate(title = str_trim(title)) %>%
+  extract(title, c("title_temp", "year"), regex = pattern, remove=F) %>%
+  mutate(year = if_else(str_length(year) > 4, as.integer(str_split(year, "-", simplify = T)[1]), as.integer(year))) %>%
+  mutate(title = if_else(is.na(title_temp), title, title_temp)) %>%
+  select(-title_temp)
+sum(is.na(movies$year))
+
+# combine movie ratings and movie details
+movielens <- left_join(ratings, movies, by = "movieId")
+head(movielens)
+
+# convert timestamp to datetime and remove timestamp
+movielens <- movielens %>% mutate(rate_datetime = as_datetime(timestamp)) %>% 
+  select(-timestamp)
+
+
+#### Create training set and test/validation set #####
+
+# Create test set - 10% of MovieLens data
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+train <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in test set are also in train set
+test <- temp %>% 
+  semi_join(train, by = "movieId") %>%
+  semi_join(train, by = "userId")
+
+# Add rows removed from test set back into train set
+removed <- anti_join(temp, test)
+train <- rbind(train, removed)
+
+# Remove unnecessary variables
+rm(dl, test_index, temp, removed)
+```
+
+## Introduction
+The objective of this project is to predict movie ratings for specific individuals based on other movies that they have rated and other people's ratings for the movie being predicted. This objective is motivated by the need to make accurate movie recommendations on streaming platforms such as Netflix. 
+
+The dataset consists of about 10 million movie ratings and 6 variables: user ID, movie ID, rating, movie title, movie genre, and the date and time of the rating. There are `r nrow(movies)` unique movies with dates ranging from `r min(movielens$year)` to `r max(movielens$year)`, as shown in the histogram below.
+
+```{r n_movies}
+movies %>%
+  ggplot(aes(year)) + 
+  geom_histogram(bins = 30, color = "black") +
+  ggtitle("Movie Release Year") +
+  ylab("number of movies")
+```
+
+There are 19 non-exclusive movie generes, with the top five most popular genres shown in the table below.
+
+```{r genres}
+movies %>% separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count)) %>% 
+  head(n=5) %>% 
+  kable() %>% 
+  kable_styling(full_width = F)
+```
+
+There are `r length(unique(train$userId))` unique users, and the number of movies they rated is shown in the histogram below. 
+
+```{r n-user-ratings}
+movielens %>% 
+  count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black") + 
+  scale_x_log10() + 
+  ggtitle("User Rating Count") +
+  xlab("number of ratings") +
+  ylab("number of users")
+```
+
+Ratings range from 0.5 to 5, with the distribution of ratings shown in the histogram below. 
+
+```{r movie-ratings}
+movielens %>% 
+  ggplot(aes(rating)) + 
+  geom_histogram(bins = 10,color = "black") + 
+  ggtitle("Movie Ratings") +
+  ylab("number of ratings")
+
+```
+
+In order to predict movie ratings, I began by downloading the data from [http://files.grouplens.org/datasets/movielens/ml-10m.zip](http://files.grouplens.org/datasets/movielens/ml-10m.zip). I cleaned and preprocessed the data as necessary. I developed a simple linear regression model that accounts for movie effects and user effects. I also applied regularization to the model, but it had minimal effect on model error. 
+
+
+## Methods/Analysis
+
+The data required minimal cleaning and preparation before analysis. There were no missing data and the datasets were already in tidy format. The movie details and ratings were in seperate datasets, so I merged them into one dataframe. I converted the UTC timestamp into date-time format. The movie title included the release year, so I removed it from the title and created a seperate column for the year. 
+
+I created the model piece-by-piece, starting with the naive model: the outcome $Y_{u,i}$ for user $u$ and movie $i$ is the overall average rating for all movies and users ($\mu$) plus some error term ($\varepsilon_{u,i}$). 
+
+$$ 
+Y_{u,i} = \mu + \varepsilon_{u,i}
+$$
+The second model included the movie effects ($b_i$), which is the average rating of each movie. This term accounts for the movie to movie variability, i.e. some movies are better than others. 
+
+$$ 
+Y_{u,i} = \mu + b_i + \varepsilon_{u,i}
+$$
+
+The third model included the user effects ($b_u$), which is the average rating a user gives. This term accounts for user to user variability, i.e. some users are harsher critics than others. 
+
+$$ 
+Y_{u,i} = \mu + b_i + b_u + \varepsilon_{u,i}
+$$
+
+The final model included regularization in order to penalize large estimates of $b_i$ and $b_u$ that are made with small sample sizes. For example, when estimating $b_i$ with the equation below, a penalty parameter ($\lambda$) of five can significantly decrease the magnitude of the estimate when the number of ratings ($n_i$) is small, but has minimal effect when $n_i$ is large.
+
+$$
+b_i(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu}\right)
+$$
+
+The models were evaluated based on the residual mean squared error (RMSE), which is defined by the following equation:
+$$
+\mbox{RMSE} = \sqrt{\frac{1}{N} \sum_{u,i}^{} \left( \hat{y}_{u,i} - y_{u,i} \right)^2 }
+$$
+where $y_{u,i}$ is the rating for movie $i$ by user $u$, $\hat{y}_{u,i}$ is our prediction, and $N$ is the total number of user and movie combinations that we are predicting/evaluating.
+
+
+## Results
+
+```{r models}
+# RMSE 
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+# naive model (1)
+mu <- mean(train$rating)
+naive_rmse <- RMSE(test$rating, mu)
+
+# model 2
+movie_avgs <- train %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu))
+predicted_ratings <- mu + test %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  pull(b_i)
+model_2_rmse <- RMSE(predicted_ratings, test$rating)
+
+# model 3 
+user_avgs <- train %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+predicted_ratings <- test %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+model_3_rmse <- RMSE(predicted_ratings, test$rating)
+
+# model 4
+lambda = 5.25  # optimized value from the movielens_project.R code
+b_i <- train %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+lambda))
+b_u <- train %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+lambda))
+predicted_ratings <- 
+  test %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+model_4_rmse <- RMSE(predicted_ratings, test$rating)
+
+# RMSE
+rmse_results <- tibble(method=c("Naive Model","Movie Effect Model", 
+                                "Movie + User Effects Model", 
+                                "Regularized Movie + User Effect Model"),
+                       RMSE=c(naive_rmse, model_2_rmse, model_3_rmse, model_4_rmse))
+```
+
+The results of the four models are shown in the table below.
+
+```{r results}
+rmse_results %>% kable(digits = 4) %>% kable_styling(full_width = F)
+```
+
+Including the movie effect showed a 19% improvemnt in RMSE over the naive model. Including the user effect showed a significant improvement in RMSE over the movie effect model. Regularization did not have a significant impact on the RMSE. This is probably because this dataset has a high number of ratings for each movie, with less than 10% of movies having fewer than 10 ratings. Regularization would prove more useful on smaller movie rating datasets which have fewer ratings per item.  
+
+
+## Conclusion
+I created a model that accounted for movie-to-movie rating variability and user-to-user rating variability. This modeling approach resulted in a significant reduction in movie rating prediction error compared to the naive model. The model was easy to interpret and was not computationally intensive. There are a number of other models that could be employed, such as user-user or item-item colaborative filtering using matrix factorization or neural networks, but these methods are very computationally intensive given our large and sparse dataset.
+
