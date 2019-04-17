@@ -172,7 +172,7 @@ $$
 $$
 where $y_{u,i}$ is the rating for movie $i$ by user $u$, $\hat{y}_{u,i}$ is our prediction, and $N$ is the total number of user and movie combinations that we are predicting/evaluating.
 
-
+<P style="page-break-before: always">
 ## Results
 
 ```{r models}

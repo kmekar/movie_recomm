@@ -1,14 +1,12 @@
 
-# library(dslabs)
 library(tidyverse)
 library(caret)
 library(lubridate)
-library(kableExtra)
+
 
 #############################################################
 #### PreProcessing #####
 #############################################################
-
 
 ### Import or Download Dataset
 if(file.exists("ml-10M100K/ratings.dat")){
@@ -158,7 +156,6 @@ movielens %>%
   ylab("number of users")
 
 
-
 ######################################
 #### Models and Predictions ##########
 ######################################
@@ -249,6 +246,5 @@ lambda
 rmse_results <- bind_rows(rmse_results,
                           data_frame(method="Regularized Movie + User Effect Model",  
                                      RMSE = min(rmses)))
-rmse_results %>% knitr::kable()
-rmse_results %>% knitr::kable(digits = 4)
+rmse_results %>% knitr::kable(digits = 5)
 
